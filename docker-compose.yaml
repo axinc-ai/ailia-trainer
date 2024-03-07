@@ -1,0 +1,185 @@
+version: '3.4'
+
+services:
+
+  custom-dataset-srv:
+    image: "ghcr.io/axinc-ai/ailia-trainer-custom-dataset-srv:latest"
+    ports:
+      - 19999:19999/tcp
+    user: 999:999 # same as trainer
+    volumes:
+      - type: volume
+        source: ailia-trainer-data
+        target: /trainer_data
+        read_only: false
+        volume:
+          nocopy: true
+    command:
+      - ./dataset-curation
+      - server
+      - --listen-addr
+      - ":19999"
+      - --work-dir
+      - /trainer_data/customDataset
+      - --upstream-addr
+      - http://trainer-yolox:8081
+      - --annotation-addr
+      - http://annotate-dataset-srv:19990
+    networks:
+      - ailia-trainer
+    hostname: custom-dataset-srv
+
+  custom-dataset-srv-yolov4:
+    image: "ghcr.io/axinc-ai/ailia-trainer-custom-dataset-srv-yolov4:latest"
+    ports:
+      - 19998:19999/tcp
+    user: 999:999 # same as trainer
+    volumes:
+      - type: volume
+        source: ailia-trainer-data
+        target: /trainer_data
+        read_only: false
+        volume:
+          nocopy: true
+    command:
+      - ./dataset-curation
+      - server
+      - --listen-addr
+      - ":19999"
+      - --work-dir
+      - /trainer_data/customDataset
+      - --upstream-addr
+      - http://trainer-yolov4:8080
+      - --annotation-addr
+      - http://annotate-dataset-srv:19990
+    networks:
+      - ailia-trainer
+    hostname: custom-dataset-srv
+
+  annotate-dataset-srv:
+    image: "ghcr.io/axinc-ai/ailia-trainer-annotate-dataset-srv:latest"
+    user: 999:999 # same as trainer
+    shm_size: '2gb'
+    volumes:
+      - type: volume
+        source: ailia-trainer-data
+        target: /trainer_data
+        read_only: false
+        volume:
+          nocopy: true
+      - type: bind
+        source: weights/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
+        target: /app/backend/models/Detic_LCOCOI21k_CLIP_SwinB_896b32_4x_ft4x_max-size.pth
+        read_only: true
+      - type: bind
+        source: weights/ViT-B-32.pt
+        target: /home/trainer/.cache/clip/ViT-B-32.pt
+        read_only: true
+    environment:
+      - PORT=19990
+      - CUSTOM_DATASET_STORAGE=/trainer_data/customDataset
+      - GUNICORN_THREADS=1
+      - GUNICORN_WORKERS=1
+      # - FORCE_CPU=1
+    networks:
+      - ailia-trainer
+    hostname: annotate-dataset-srv
+    deploy:
+      resources:
+        limits:
+          cpus: '6'
+          # memory: 6G # If GPU is used, need at least 6GB
+        reservations:
+          cpus: '6'
+          # memory: 6G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  trainer-yolov4:
+    image: "ghcr.io/axinc-ai/ailia-trainer-trainer-yolov4:latest"
+    shm_size: '2gb'
+    volumes:
+      - type: volume
+        source: ailia-trainer-data
+        target: /trainer_data
+        read_only: false
+        volume:
+          nocopy: true
+      - type: bind
+        source: weights
+        target: /weights
+        read_only: true
+    environment:
+      # /!\ If you are running the training atop wsl2, you should
+      # uncomment this line below to avoid network problem when
+      # downloading an oid dataset.
+      #- USE_WSL2=1
+
+      - PORT=8080
+      - TRAINER_PATH=/app
+      - TRAINING_PRETRAINED=/weights/yolov4.conv.137.pth
+      - TRAINING_DEST=/trainer_data/training
+      - CUSTOM_DATASET_STORAGE=/trainer_data/customDataset
+      - CUSTOM_DATASET_ENDPOINT=http://custom-dataset-srv:19999/custom_dataset/
+      - DISK_USAGE_MONITOR_PATH=/
+      # cf https://stackoverflow.com/questions/73747731/runtimeerror-cuda-out-of-memory-how-can-i-set-max-split-size-mb
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+    networks:
+      - ailia-trainer
+    hostname: trainer-yolov4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  trainer-yolox:
+    image: "ghcr.io/axinc-ai/ailia-trainer-trainer-yolox:latest"
+    shm_size: '2gb'
+    volumes:
+      - type: volume
+        source: ailia-trainer-data
+        target: /trainer_data
+        read_only: false
+        volume:
+          nocopy: false
+      - type: bind
+        source: weights
+        target: /weights
+        read_only: true
+    environment:
+      # /!\ If you are running the training atop wsl2, you should
+      # uncomment this line below to avoid network problem when
+      # downloading an oid dataset.
+      #- USE_WSL2=1
+
+      - PORT=8081
+      - TRAINER_PATH=/app
+      - TRAINING_PRETRAINED=/weights/yolov4.conv.137.pth
+      - TRAINING_DEST=/trainer_data/training
+      - CUSTOM_DATASET_STORAGE=/trainer_data/customDataset
+      - CUSTOM_DATASET_ENDPOINT=http://custom-dataset-srv:19999/custom_dataset/
+      - DISK_USAGE_MONITOR_PATH=/
+      # cf https://stackoverflow.com/questions/73747731/runtimeerror-cuda-out-of-memory-how-can-i-set-max-split-size-mb
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+    networks:
+      - ailia-trainer
+    hostname: trainer-yolox
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  ailia-trainer:
+
+volumes:
+  ailia-trainer-data:
+    driver: local
